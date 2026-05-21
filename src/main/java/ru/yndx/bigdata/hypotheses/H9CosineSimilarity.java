@@ -1,7 +1,11 @@
 package ru.yndx.bigdata.hypotheses;
 
+import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.yndx.bigdata.pipeline.Datasets;
@@ -130,23 +134,41 @@ public class H9CosineSimilarity {
         return uids;
     }
 
-    private Map<Long, float[]> loadEmbeddings(String path, Set<Long> neededItems) {
-        // Read in batches; filter to needed items
-        List<Row> rows = spark.read().parquet(path)
-                .filter(col("item_id").isin(neededItems.toArray()))
-                .select("item_id", "normalized_embed")
-                .collectAsList();
+	private Map<Long, float[]> loadEmbeddings(String path, Set<Long> neededItems) {
+		spark.conf().set("spark.sql.parquet.enableVectorizedReader", "false");
+		spark.conf().set("spark.sql.files.maxPartitionBytes", String.valueOf(8L * 1024 * 1024));
+		spark.conf().set("spark.sql.shuffle.partitions", "4");
 
-        Map<Long, float[]> dict = new HashMap<>();
-        for (Row r : rows) {
-            long itemId = ((Number) r.get(0)).longValue();
-            WrappedArray<?> raw = (WrappedArray<?>) r.get(1);
-            float[] vec = new float[raw.size()];
-            for (int i = 0; i < vec.length; i++) vec[i] = ((Number) raw.apply(i)).floatValue();
-            dict.put(itemId, vec);
-        }
-        return dict;
-    }
+		try {
+			List<Row> idRows = new ArrayList<>();
+			for (Long id : neededItems) idRows.add(RowFactory.create(id));
+
+			Dataset<Row> neededDf = spark.createDataFrame(
+					idRows,
+					new StructType().add("item_id", DataTypes.LongType)
+			);
+
+			List<Row> rows = spark.read().parquet(path)
+					.join(broadcast(neededDf), "item_id")
+					.select("item_id", "normalized_embed")
+					.coalesce(4)   // не более 4 задач читают одновременно
+					.collectAsList();
+
+			Map<Long, float[]> dict = new HashMap<>();
+			for (Row r : rows) {
+				long itemId = ((Number) r.get(0)).longValue();
+				WrappedArray<?> raw = (WrappedArray<?>) r.get(1);
+				float[] vec = new float[raw.size()];
+				for (int i = 0; i < vec.length; i++) vec[i] = ((Number) raw.apply(i)).floatValue();
+				dict.put(itemId, vec);
+			}
+			return dict;
+		} finally {
+			spark.conf().set("spark.sql.parquet.enableVectorizedReader", "true");
+			spark.conf().set("spark.sql.files.maxPartitionBytes", String.valueOf(128L * 1024 * 1024));
+			spark.conf().set("spark.sql.shuffle.partitions", "200");
+		}
+	}
 
     private void processUsers(List<Row> userListens, Map<Long, float[]> embDict,
                                List<double[]> out) {

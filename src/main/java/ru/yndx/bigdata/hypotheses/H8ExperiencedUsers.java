@@ -3,6 +3,7 @@ package ru.yndx.bigdata.hypotheses;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.expressions.Window;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.yndx.bigdata.pipeline.Datasets;
@@ -38,17 +39,26 @@ public class H8ExperiencedUsers {
     public HypothesisResult run() {
         log.info("=== H8: Recommendation effectiveness by user experience quartile ===");
 
-        // 1. User activity quartile
-        Dataset<Row> userActivity = ds.listensEnriched
-                .groupBy("uid")
-                .agg(count("*").alias("total_listens"))
-                .withColumn("activity_quartile",
-                        ntile(4).over(
-                                org.apache.spark.sql.expressions.Window
-                                        .orderBy("total_listens")
-                        )
-                );
-        // ntile(4): 1=least active, 4=most active
+		Dataset<Row> quantiles = ds.listensEnriched
+				.groupBy("uid")
+				.agg(count("*").alias("total_listens"));
+
+		Row pcts = quantiles.agg(
+				percentile_approx(col("total_listens"), lit(0.25), lit(1000)).alias("q1"),
+				percentile_approx(col("total_listens"), lit(0.50), lit(1000)).alias("q2"),
+				percentile_approx(col("total_listens"), lit(0.75), lit(1000)).alias("q3")
+		).first();
+
+		long q1 = ((Number) pcts.get(0)).longValue();
+		long q2 = ((Number) pcts.get(1)).longValue();
+		long q3 = ((Number) pcts.get(2)).longValue();
+
+		Dataset<Row> userActivity = quantiles.withColumn("activity_quartile",
+				when(col("total_listens").leq(q1), 1)
+						.when(col("total_listens").leq(q2), 2)
+						.when(col("total_listens").leq(q3), 3)
+						.otherwise(4)
+		);
 
         // 2. Join back to listens, filter to recommended
         Dataset<Row> recListens = ds.listensEnriched
