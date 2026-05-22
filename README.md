@@ -1,6 +1,6 @@
 # Yambda-50M — Java + Gradle + Spark
 
-Переписанный аналог ноутбука `yndx-bigdata.ipynb`.
+Переписанный аналог ноутбука [`yndx-bigdata.ipynb`](https://github.com/ericsupersonic/yndx-bigdata).
 Тестирует гипотезы H1–H11 об органических vs рекомендательных треках
 в датасете [Yambda-50M](https://huggingface.co/datasets/yandex/yambda).
 
